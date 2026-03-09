@@ -11,7 +11,7 @@ Run locally:  python app.py
 Deploy:       See DEPLOY.md for Railway / Render / VPS instructions
 """
 
-import os, json, sqlite3, hashlib, secrets, datetime, time
+import os, json, sqlite3, hashlib, secrets, datetime, time, urllib.request
 from functools import wraps
 from flask import Flask, request, jsonify, g, send_from_directory
 from flask_cors import CORS
@@ -37,8 +37,124 @@ PRICE_IDS = {
     "agency":  os.environ.get("STRIPE_PRICE_AGENCY",  "price_1T90Ue09xjTDj24nc2rL2PG4"),   # $249/mo
 }
 
+SENDGRID_API_KEY  = os.environ.get("SENDGRID_API_KEY", "")
+SENDGRID_FROM     = "hello@kormex.net"
+SENDGRID_NAME     = "ProGrowth AI"
+INTERNAL_SECRET   = os.environ.get("INTERNAL_SECRET", "internal-cron-secret")
+
 stripe.api_key = STRIPE_SECRET_KEY
 ai_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+
+
+# ââââââââââââââââââââââââââââââââââââââââââââââ
+# EMAIL AUTOMATION  (SendGrid)
+# ââââââââââââââââââââââââââââââââââââââââââââââ
+def send_email(to_email: str, to_name: str, subject: str, html: str):
+    """Send a transactional email via SendGrid REST API (no SDK needed)."""
+    if not SENDGRID_API_KEY:
+        return
+    payload = json.dumps({
+        "personalizations": [{"to": [{"email": to_email, "name": to_name}]}],
+        "from": {"email": SENDGRID_FROM, "name": SENDGRID_NAME},
+        "subject": subject,
+        "content": [{"type": "text/html", "value": html}]
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=payload,
+        headers={"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except Exception:
+        pass  # Never block user flow due to email failure
+
+
+def send_welcome_email(name: str, email: str):
+    html = f"""
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e">
+      <div style="background:linear-gradient(135deg,#6c63ff,#a78bfa);padding:32px;border-radius:12px 12px 0 0;text-align:center">
+        <h1 style="color:#fff;margin:0;font-size:28px">Welcome to ProGrowth AI ð</h1>
+      </div>
+      <div style="background:#fff;padding:32px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">
+        <p style="font-size:16px">Hey {name},</p>
+        <p style="font-size:16px">You're in! Your 14-day free trial has started. Here's what you can do right now:</p>
+        <ul style="font-size:15px;line-height:2">
+          <li>ð <strong>SEO Audit</strong> â scan any website for quick wins</li>
+          <li>âï¸ <strong>Content Generator</strong> â blog posts, ads, emails in seconds</li>
+          <li>ð <strong>Keyword Research</strong> â find low-competition opportunities</li>
+          <li>ð <strong>Competitor Analysis</strong> â spy on what's working for rivals</li>
+        </ul>
+        <div style="text-align:center;margin:32px 0">
+          <a href="{FRONTEND_URL}/app.html" style="background:#6c63ff;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-size:16px;font-weight:bold">Open ProGrowth AI â</a>
+        </div>
+        <p style="font-size:14px;color:#6b7280">Your trial runs for 14 days. No credit card needed until you're ready to upgrade.</p>
+        <p style="font-size:14px;color:#6b7280">Questions? Just reply to this email â we read every one.<br><br>â The Kormex Team</p>
+      </div>
+    </div>"""
+    send_email(email, name, "Welcome to ProGrowth AI â your 14-day trial has started ð", html)
+
+
+def send_trial_nudge_email(name: str, email: str, days_left: int):
+    html = f"""
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e">
+      <div style="background:linear-gradient(135deg,#f59e0b,#fbbf24);padding:32px;border-radius:12px 12px 0 0;text-align:center">
+        <h1 style="color:#fff;margin:0;font-size:26px">â° {days_left} days left on your trial</h1>
+      </div>
+      <div style="background:#fff;padding:32px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">
+        <p style="font-size:16px">Hey {name},</p>
+        <p style="font-size:16px">Your ProGrowth AI trial ends in <strong>{days_left} days</strong>. Don't lose access to your SEO toolkit.</p>
+        <p style="font-size:16px">Upgrade now and keep everything â your audit history, saved keywords, and all 4 AI tools.</p>
+        <div style="background:#f9fafb;border-radius:8px;padding:20px;margin:20px 0">
+          <p style="margin:0;font-size:15px"><strong>Starter</strong> â $49/mo Â· Perfect for solo founders</p>
+          <p style="margin:8px 0 0;font-size:15px"><strong>Growth</strong> â $99/mo Â· Best for growing teams</p>
+          <p style="margin:8px 0 0;font-size:15px"><strong>Agency</strong> â $249/mo Â· Unlimited clients</p>
+        </div>
+        <div style="text-align:center;margin:32px 0">
+          <a href="{FRONTEND_URL}/#pricing" style="background:#6c63ff;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-size:16px;font-weight:bold">Upgrade Now â</a>
+        </div>
+        <p style="font-size:14px;color:#6b7280">All plans include a 14-day money-back guarantee.</p>
+      </div>
+    </div>"""
+    send_email(email, name, f"â° Your ProGrowth AI trial ends in {days_left} days", html)
+
+
+def send_upgrade_prompt_email(name: str, email: str, reason: str = "cancelled"):
+    subject = "We're sorry to see you go â here's 20% off to come back" if reason == "cancelled" else "Action needed: your ProGrowth AI payment failed"
+    if reason == "cancelled":
+        html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e">
+          <div style="background:linear-gradient(135deg,#6c63ff,#a78bfa);padding:32px;border-radius:12px 12px 0 0;text-align:center">
+            <h1 style="color:#fff;margin:0;font-size:26px">We'll miss you, {name} ð</h1>
+          </div>
+          <div style="background:#fff;padding:32px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">
+            <p style="font-size:16px">Hey {name},</p>
+            <p style="font-size:16px">Your subscription has been cancelled. We're sorry it didn't work out.</p>
+            <p style="font-size:16px">If you'd like to come back, we'd love to offer you <strong>20% off your first month</strong>. Just reply to this email and we'll set it up.</p>
+            <div style="text-align:center;margin:32px 0">
+              <a href="{FRONTEND_URL}/#pricing" style="background:#6c63ff;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-size:16px;font-weight:bold">Come Back â</a>
+            </div>
+            <p style="font-size:14px;color:#6b7280">Your data is saved for 30 days â you can pick up right where you left off.</p>
+          </div>
+        </div>"""
+    else:
+        html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e">
+          <div style="background:linear-gradient(135deg,#ef4444,#f87171);padding:32px;border-radius:12px 12px 0 0;text-align:center">
+            <h1 style="color:#fff;margin:0;font-size:26px">â ï¸ Payment issue â action needed</h1>
+          </div>
+          <div style="background:#fff;padding:32px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">
+            <p style="font-size:16px">Hey {name},</p>
+            <p style="font-size:16px">We couldn't process your last payment for ProGrowth AI. Your access may be paused soon.</p>
+            <p style="font-size:16px">Please update your payment method to keep your tools running.</p>
+            <div style="text-align:center;margin:32px 0">
+              <a href="{FRONTEND_URL}/app.html" style="background:#ef4444;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-size:16px;font-weight:bold">Update Payment â</a>
+            </div>
+            <p style="font-size:14px;color:#6b7280">If you think this is a mistake, please reply to this email and we'll sort it out right away.</p>
+          </div>
+        </div>"""
+    send_email(email, name, subject, html)
 
 
 # ââââââââââââââââââââââââââââââââââââââââââââââ
@@ -184,6 +300,9 @@ def register():
     user = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
     token = create_session(user["id"])
 
+    # Send welcome email (non-blocking)
+    send_welcome_email(name, email)
+
     return jsonify({
         "token": token,
         "user": {
@@ -308,7 +427,11 @@ def stripe_webhook():
             "UPDATE users SET sub_status='cancelled', plan='free' WHERE stripe_customer=?",
             (obj["customer"],)
         )
-        db.comm	t()
+        db.commit()
+        # Send win-back email
+        row = db.execute("SELECT name, email FROM users WHERE stripe_customer=?", (obj["customer"],)).fetchone()
+        if row:
+            send_upgrade_prompt_email(row["name"], row["email"], reason="cancelled")
 
     elif et == "invoice.payment_failed":
         db.execute(
@@ -316,6 +439,10 @@ def stripe_webhook():
             (obj["customer"],)
         )
         db.commit()
+        # Send payment failure email
+        row = db.execute("SELECT name, email FROM users WHERE stripe_customer=?", (obj["customer"],)).fetchone()
+        if row:
+            send_upgrade_prompt_email(row["name"], row["email"], reason="past_due")
 
     return jsonify({"received": True})
 
@@ -526,6 +653,36 @@ Provide 5 top keywords, 3-4 content gaps/opportunities, 3 strengths, and 3 weakn
         }
 
     return jsonify(result)
+
+
+# ââââââââââââââââââââââââââââââââââââââââââââââ
+# INTERNAL CRON ROUTE  (call daily to send trial nudges)
+# ââââââââââââââââââââââââââââââââââââââââââââââ
+@app.route("/api/internal/trial-nudge", methods=["POST"])
+def trial_nudge_cron():
+    """Protected cron endpoint â send day-12 nudge emails to trials ending in ~2 days."""
+    secret = request.headers.get("X-Internal-Secret", "")
+    if secret != INTERNAL_SECRET:
+        return jsonify({"error": "Forbidden"}), 403
+
+    now = int(time.time())
+    # Users whose trial ends in 1-3 days (day 11-13 of 14-day trial window)
+    window_start = now + 60 * 60 * 24 * 1   # 1 day from now
+    window_end   = now + 60 * 60 * 24 * 3   # 3 days from now
+
+    db = get_db()
+    rows = db.execute(
+        "SELECT name, email, trial_ends_at FROM users WHERE sub_status='trialing' AND trial_ends_at BETWEEN ? AND ?",
+        (window_start, window_end)
+    ).fetchall()
+
+    sent = 0
+    for row in rows:
+        days_left = max(1, round((row["trial_ends_at"] - now) / 86400))
+        send_trial_nudge_email(row["name"], row["email"], days_left)
+        sent += 1
+
+    return jsonify({"sent": sent, "checked_at": now})
 
 
 # ââââââââââââââââââââââââââââââââââââââââââââââ
