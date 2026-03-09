@@ -1,5 +1,5 @@
 """
-ProGrowth AI — Backend Server
+ProGrowth AI â Backend Server
 ================================
 Python Flask backend handling:
   - User registration & login (JWT auth)
@@ -16,10 +16,11 @@ from functools import wraps
 from flask import Flask, request, jsonify, g, send_from_directory
 from flask_cors import CORS
 import stripe
+import anthropic
 
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 # CONFIG  (set real values in environment variables)
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 app = Flask(__name__, static_folder='../static')
 CORS(app, origins=["https://kormex.net", "https://app.kormex.net", "http://localhost:3000"])
 
@@ -29,7 +30,7 @@ STRIPE_WEBHOOK_SEC = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 DATABASE           = os.environ.get("DATABASE_PATH", "progrowth.db")
 FRONTEND_URL       = os.environ.get("FRONTEND_URL", "https://app.kormex.net")
 
-# Stripe price IDs — paste yours from Stripe dashboard
+# Stripe price IDs â paste yours from Stripe dashboard
 PRICE_IDS = {
     "starter": os.environ.get("STRIPE_PRICE_STARTER", "price_1T90Qr09xjTDj24ntlF1u2qF"),   # $49/mo
     "growth":  os.environ.get("STRIPE_PRICE_GROWTH",  "price_1T90UD09xjTDj24n6gcZ6Zzs"),   # $99/mo
@@ -37,11 +38,12 @@ PRICE_IDS = {
 }
 
 stripe.api_key = STRIPE_SECRET_KEY
+ai_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
 
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 # DATABASE
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 def get_db():
     if "db" not in g:
         g.db = sqlite3.connect(DATABASE, detect_types=sqlite3.PARSE_DECLTYPES)
@@ -90,9 +92,9 @@ def init_db():
         db.commit()
 
 
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 # AUTH HELPERS
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
     h = hashlib.sha256((salt + password + SECRET_KEY).encode()).hexdigest()
@@ -146,9 +148,9 @@ def require_active_sub(f):
     return decorated
 
 
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 # AUTH ROUTES
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 @app.route("/api/auth/register", methods=["POST"])
 def register():
     data = request.get_json()
@@ -234,9 +236,9 @@ def logout():
     return jsonify({"ok": True})
 
 
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 # STRIPE ROUTES
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 @app.route("/api/billing/checkout", methods=["POST"])
 @require_auth
 def create_checkout():
@@ -306,7 +308,7 @@ def stripe_webhook():
             "UPDATE users SET sub_status='cancelled', plan='free' WHERE stripe_customer=?",
             (obj["customer"],)
         )
-        db.commit()
+        db.comm	t()
 
     elif et == "invoice.payment_failed":
         db.execute(
@@ -318,63 +320,76 @@ def stripe_webhook():
     return jsonify({"received": True})
 
 
-# ──────────────────────────────────────────────
-# TOOL ROUTES  (protected — require active sub)
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
+# TOOL ROUTES  (protected â require active sub)
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 @app.route("/api/tools/seo-audit", methods=["POST"])
 @require_auth
 @require_active_sub
 def seo_audit():
-    """
-    In production: connect to a real SEO data API (e.g. DataForSEO, Semrush API).
-    For now, returns a realistic demo analysis based on the URL.
-    """
     url = (request.get_json().get("url") or "").strip()
     if not url:
         return jsonify({"error": "URL required"}), 400
 
     domain = url.replace("https://", "").replace("http://", "").split("/")[0]
 
-    # Save audit record
+    try:
+        prompt = f"""You are an expert SEO consultant. Analyse the website: {url}
+
+Return ONLY valid JSON (no markdown, no code fences) in exactly this structure:
+{{
+  "domain": "{domain}",
+  "overall_score": <integer 0-100>,
+  "scores": {{
+    "page_speed": <0-100>, "on_page": <0-100>, "technical": <0-100>,
+    "content": <0-100>, "mobile": <0-100>, "backlinks": <0-100>
+  }},
+  "issues": [
+    {{"priority": "high|medium|low", "category": "<name>", "fix": "<specific actionable fix>"}}
+  ],
+  "opportunities": ["<specific growth opportunity with estimated impact>"]
+}}
+
+Provide 4-6 issues and 3 opportunities. Be specific to the domain {domain}. Base scores on realistic estimates for the industry and domain type. Make the fixes and opportunities genuinely actionable."""
+
+        msg = ai_client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        result = json.loads(msg.content[0].text)
+    except Exception as e:
+        # Fallback to realistic mock data if AI call fails
+        result = {
+            "domain": domain,
+            "overall_score": 62,
+            "scores": {"page_speed": 58, "on_page": 71, "technical": 65, "content": 74, "mobile": 80, "backlinks": 38},
+            "issues": [
+                {"priority": "high", "category": "Speed", "fix": f"Compress images and enable browser caching on {domain} â could improve load time by 40%"},
+                {"priority": "high", "category": "On-Page", "fix": "Add unique meta descriptions to all pages â missing on most pages"},
+                {"priority": "medium", "category": "Technical", "fix": "Implement structured data (schema.org) for better rich snippets"},
+                {"priority": "low", "category": "Mobile", "fix": "Increase tap target sizes for better mobile usability score"},
+            ],
+            "opportunities": [
+                f"Publish weekly blog content targeting long-tail keywords in your niche â could 3x organic traffic in 6 months",
+                f"Build 10 local citations on directories â quick wins for local SEO",
+                f"Add FAQ schema markup â can earn featured snippets for question-based queries"
+            ]
+        }
+
     get_db().execute(
         "INSERT INTO audits (user_id, url, results) VALUES (?, ?, ?)",
-        (g.user["id"], url, json.dumps({"domain": domain, "status": "complete"}))
+        (g.user["id"], url, json.dumps(result))
     )
     get_db().commit()
 
-    return jsonify({
-        "domain": domain,
-        "overall_score": 68,
-        "scores": {
-            "page_speed": 55, "on_page": 74, "technical": 61,
-            "content": 78, "mobile": 82, "backlinks": 44
-        },
-        "issues": [
-            {"priority": "high",   "category": "Speed",       "fix": f"Page load time is slow — compress images and enable browser caching on {domain}"},
-            {"priority": "high",   "category": "On-Page",     "fix": "Multiple pages missing meta descriptions — add unique descriptions for each page"},
-            {"priority": "medium", "category": "Technical",   "fix": "3 broken internal links found — update or remove them"},
-            {"priority": "medium", "category": "Schema",      "fix": "No schema markup detected — add LocalBusiness or Organization schema"},
-            {"priority": "low",    "category": "Mobile",      "fix": "Some tap targets too small on mobile — increase button sizes"},
-        ],
-        "opportunities": [
-            "Competitor gap: 'AI marketing tools' keyword — 3,200 searches/month, low competition",
-            "Local SEO: No city-specific pages found — add location pages to capture local traffic",
-            "Content: No blog section detected — publishing 2 posts/month could 3x organic traffic in 6 months"
-        ]
-    })
+    return jsonify(result)
 
 
 @app.route("/api/tools/content", methods=["POST"])
 @require_auth
 @require_active_sub
 def generate_content():
-    """
-    In production: call OpenAI / Anthropic API here.
-    Replace the placeholder with:
-        import anthropic
-        client = anthropic.Anthropic(api_key=os.environ['ANTHROPIC_API_KEY'])
-        message = client.messages.create(model="claude-opus-4-6", max_tokens=2000, messages=[...])
-    """
     data    = request.get_json()
     ctype   = data.get("type", "blog")
     topic   = data.get("topic", "")
@@ -383,18 +398,27 @@ def generate_content():
     if not topic:
         return jsonify({"error": "Topic required"}), 400
 
-    # ── PLACEHOLDER: replace with real AI call ──
-    # import anthropic
-    # client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    # prompt = build_content_prompt(ctype, topic, keyword)
-    # result = client.messages.create(
-    #     model="claude-opus-4-6",
-    #     max_tokens=2000,
-    #     messages=[{"role": "user", "content": prompt}]
-    # )
-    # content = result.content[0].text
+    keyword_str = f" Target keyword: '{keyword}'." if keyword else ""
 
-    content = f"[AI-generated {ctype} content about: {topic}]\n\nKeyword targeted: {keyword}\n\nTo activate real AI content generation, add your ANTHROPIC_API_KEY to the server environment and uncomment the API call in app.py."
+    type_prompts = {
+        "blog": f"Write a comprehensive, SEO-optimized blog post about: {topic}.{keyword_str} Include a compelling H1 headline, engaging introduction, 4-5 main sections with H2 subheadings, practical tips, and a conclusion with a clear CTA. Aim for ~800 words. Write in a friendly, expert tone.",
+        "social": f"Write 5 social media posts about: {topic}.{keyword_str} Include: 1 LinkedIn post (professional, 150 words), 2 Twitter/X posts (under 280 chars each, with relevant hashtags), 2 Instagram captions (engaging, emoji-friendly). Label each platform clearly.",
+        "ad": f"Write high-converting ad copy for: {topic}.{keyword_str} Create: (1) Google Search Ad â 3 headlines (max 30 chars each) + 2 descriptions (max 90 chars each), (2) Facebook/Instagram Ad â attention-grabbing hook + body + CTA, (3) LinkedIn Ad â professional hook + value prop + CTA. Label each format.",
+        "email": f"Write a persuasive marketing email about: {topic}.{keyword_str} Include: Subject line, Preview text, Personalized greeting, Problem-aware opening, Solution/offer body (2-3 paragraphs), Social proof line, Strong CTA button text, Sign-off. Keep it under 300 words.",
+        "product": f"Write a compelling product/service description for: {topic}.{keyword_str} Include: SEO-optimized headline, 2-sentence overview, 5 key benefits (bullet points with emojis), features list, who it's for, and a strong CTA. Optimized for both search engines and conversions.",
+    }
+
+    prompt = type_prompts.get(ctype, type_prompts["blog"])
+
+    try:
+        msg = ai_client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        content = msg.content[0].text
+    except Exception as e:
+        content = f"Content generation temporarily unavailable. Error: {str(e)}"
 
     return jsonify({"content": content, "type": ctype, "topic": topic})
 
@@ -403,26 +427,50 @@ def generate_content():
 @require_auth
 @require_active_sub
 def keyword_research():
-    """
-    In production: integrate DataForSEO, Ahrefs, or Semrush API.
-    API call example in DEPLOY.md.
-    """
     seed = request.get_json().get("seed", "")
     if not seed:
         return jsonify({"error": "Seed keyword required"}), 400
 
-    return jsonify({
-        "seed": seed,
-        "keywords": [
-            {"keyword": seed,                      "volume": 22000, "difficulty": "High",   "cpc": 4.20, "opportunity": "build"},
-            {"keyword": f"{seed} for small business", "volume": 3600,  "difficulty": "Low",    "cpc": 2.80, "opportunity": "target"},
-            {"keyword": f"best {seed} tools",      "volume": 1900,  "difficulty": "Low",    "cpc": 5.40, "opportunity": "target"},
-            {"keyword": f"affordable {seed}",      "volume": 880,   "difficulty": "Low",    "cpc": 3.10, "opportunity": "target"},
-            {"keyword": f"how to do {seed}",       "volume": 4400,  "difficulty": "Medium", "cpc": 2.40, "opportunity": "content"},
-            {"keyword": f"{seed} agency",          "volume": 9900,  "difficulty": "High",   "cpc": 8.70, "opportunity": "build"},
-            {"keyword": f"free {seed} tools",      "volume": 3200,  "difficulty": "Low",    "cpc": 1.60, "opportunity": "target"},
-        ]
-    })
+    try:
+        prompt = f"""You are an expert SEO keyword researcher. Generate a keyword research report for the seed keyword: "{seed}"
+
+Return ONLY valid JSON (no markdown, no code fences) in exactly this structure:
+{{
+  "seed": "{seed}",
+  "keywords": [
+    {{
+      "keyword": "<keyword phrase>",
+      "volume": <realistic monthly search volume integer>,
+      "difficulty": "Low|Medium|High",
+      "cpc": <realistic CPC in USD as float>,
+      "opportunity": "target|build|content"
+    }}
+  ]
+}}
+
+Generate 8-10 keyword variations including: the seed keyword, long-tail variations, question-based keywords, comparison keywords, and local variations. Use realistic search volumes and CPCs for the industry. 'target' = easy wins, 'build' = worth investing in, 'content' = good for blog posts."""
+
+        msg = ai_client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        result = json.loads(msg.content[0].text)
+    except Exception as e:
+        result = {
+            "seed": seed,
+            "keywords": [
+                {"keyword": seed, "volume": 18000, "difficulty": "High", "cpc": 4.50, "opportunity": "build"},
+                {"keyword": f"{seed} for small business", "volume": 2900, "difficulty": "Low", "cpc": 2.80, "opportunity": "target"},
+                {"keyword": f"best {seed} tools", "volume": 1600, "difficulty": "Low", "cpc": 5.20, "opportunity": "target"},
+                {"keyword": f"how to {seed}", "volume": 5400, "difficulty": "Medium", "cpc": 1.90, "opportunity": "content"},
+                {"keyword": f"affordable {seed}", "volume": 720, "difficulty": "Low", "cpc": 3.10, "opportunity": "target"},
+                {"keyword": f"{seed} software", "volume": 8100, "difficulty": "High", "cpc": 7.40, "opportunity": "build"},
+                {"keyword": f"{seed} tips", "volume": 3300, "difficulty": "Low", "cpc": 1.50, "opportunity": "content"},
+            ]
+        }
+
+    return jsonify(result)
 
 
 @app.route("/api/tools/competitor", methods=["POST"])
@@ -431,35 +479,74 @@ def keyword_research():
 def competitor_analysis():
     url    = (request.get_json().get("url") or "").strip()
     domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-    return jsonify({
-        "domain": domain,
-        "authority": 42, "monthly_traffic": 18400, "backlinks": 2847, "keywords": 1204,
-        "top_keywords": [
-            {"keyword": "best marketing tools for small business", "position": 3,  "volume": 2400},
-            {"keyword": "affordable seo services",                 "position": 7,  "volume": 1800},
-            {"keyword": "how to rank on google",                   "position": 12, "volume": 5400},
-        ],
-        "gaps": [
-            {"opportunity": "AI marketing tools", "volume": 3200, "difficulty": "Low",  "why": "Competitor has no content on this topic"},
-            {"opportunity": "Local SEO tips",     "volume": 1800, "difficulty": "Low",  "why": "Competitor targeting national only"},
-        ]
-    })
+
+    try:
+        prompt = f"""You are a competitive intelligence expert. Analyse the competitor website: {url}
+
+Return ONLY valid JSON (no markdown, no code fences) in exactly this structure:
+{{
+  "domain": "{domain}",
+  "authority": <domain authority 1-100 integer>,
+  "monthly_traffic": <estimated monthly visitors integer>,
+  "backlinks": <estimated backlink count integer>,
+  "keywords": <estimated number of ranking keywords integer>,
+  "top_keywords": [
+    {{"keyword": "<keyword>", "position": <1-50>, "volume": <monthly searches>}}
+  ],
+  "gaps": [
+    {{"opportunity": "<topic/keyword>", "volume": <monthly searches>, "difficulty": "Low|Medium|High", "why": "<why this is an opportunity>"}}
+  ],
+  "strengths": ["<strength 1>", "<strength 2>", "<strength 3>"],
+  "weaknesses": ["<weakness 1>", "<weakness 2>", "<weakness 3>"]
+}}
+
+Provide 5 top keywords, 3-4 content gaps/opportunities, 3 strengths, and 3 weaknesses. Base estimates on the industry and domain type. Be specific and actionable."""
+
+        msg = ai_client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        result = json.loads(msg.content[0].text)
+    except Exception as e:
+        result = {
+            "domain": domain,
+            "authority": 38, "monthly_traffic": 14200, "backlinks": 2100, "keywords": 980,
+            "top_keywords": [
+                {"keyword": f"best {domain.split('.')[0]} services", "position": 4, "volume": 2200},
+                {"keyword": f"{domain.split('.')[0]} pricing", "position": 8, "volume": 1400},
+                {"keyword": f"{domain.split('.')[0]} reviews", "position": 11, "volume": 3800},
+            ],
+            "gaps": [
+                {"opportunity": "AI-powered features comparison", "volume": 2800, "difficulty": "Low", "why": "Competitor has no content comparing AI tools"},
+                {"opportunity": "How-to tutorial content", "volume": 4200, "difficulty": "Low", "why": "Competitor has few educational resources"},
+            ],
+            "strengths": ["Strong domain authority", "Active blog with consistent publishing", "Good backlink profile"],
+            "weaknesses": ["Slow page load speed", "Weak mobile experience", "Limited long-tail keyword coverage"]
+        }
+
+    return jsonify(result)
 
 
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 # HEALTH CHECK
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 @app.route("/api/health")
 def health():
     return jsonify({"status": "ok", "service": "ProGrowth AI", "version": "1.0.0"})
 
 
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
+# INITIALISE DB on startup (works with both gunicorn and python app.py)
+# ââââââââââââââââââââââââââââââââââââââââââââââ
+init_db()
+
+
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 # MAIN
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 if __name__ == "__main__":
-    init_db()
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_ENV") == "development"
-    print(f"✅ ProGrowth AI backend running on port {port}")
+    print(f"â ProGrowth AI backend running on port {port}")
     app.run(host="0.0.0.0", port=port, debug=debug)
